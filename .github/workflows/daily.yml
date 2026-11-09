@@ -1,0 +1,38 @@
+name: 微信每日简报
+
+on:
+  schedule:
+    - cron: '8 0 * * *'
+  workflow_dispatch:
+    inputs:
+      send:
+        description: 推送到微信（取消勾选则只预览）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wechat-daily-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: 生成并按需推送
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          SEND_TO_WECHAT: ${{ github.event_name == 'schedule' || inputs.send }}
+        run: |
+          if [ "$SEND_TO_WECHAT" = 'true' ]; then
+            python brief.py --send
+          else
+            python brief.py
+          fi
