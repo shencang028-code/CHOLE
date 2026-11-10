@@ -4,12 +4,15 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html import unescape
 import json
 import math
 import os
 from pathlib import Path
 import re
 import sys
+from threading import Lock
+from time import monotonic, sleep
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -17,11 +20,13 @@ from xml.etree import ElementTree
 
 CHINA = timezone(timedelta(hours=8))
 CONFIG = Path(__file__).with_name("config.json")
+NEWS_API_LOCK = Lock()
+next_news_request = 0.0
 
 
-def request(url, fields=None):
+def request(url, fields=None, headers=None):
     data = urlencode(fields).encode() if fields is not None else None
-    req = Request(url, data=data, headers={"User-Agent": "Mozilla/5.0 DailyBrief/1.0"})
+    req = Request(url, data=data, headers={"User-Agent": "Mozilla/5.0 DailyBrief/1.0", **(headers or {})})
     with urlopen(req, timeout=15) as response:
         payload = response.read(8_000_001)
     if len(payload) > 8_000_000:
@@ -61,7 +66,58 @@ def rss(url):
     return sorted(items, reverse=True)
 
 
+def news_with_details(config, now, api_key):
+    global next_news_request
+    params = urlencode({
+        "q": config["query"], "lang": "zh",
+        "from": (now - timedelta(hours=48)).astimezone(timezone.utc).isoformat(),
+        "max": 10, "sortby": "publishedAt", "nullable": "image,content",
+    })
+    # The free plan allows one request per second.
+    with NEWS_API_LOCK:
+        sleep(max(0, next_news_request - monotonic()))
+        next_news_request = monotonic() + 1.1
+        response = request(f"https://gnews.io/api/v4/search?{params}",
+                           headers={"X-Api-Key": api_key})
+    lines, seen = [], set()
+    for article in json.loads(response)["articles"]:
+        title = unescape(article["title"]).strip()
+        description = unescape(article.get("description") or "")
+        description = " ".join(re.sub(r"<[^>]*>", "", description).split())
+        key = re.sub(r"[\W_]+", "", title.casefold())
+        description_key = re.sub(r"[\W_]+", "", description.casefold())
+        if not key or key in seen or not description_key or description_key == key:
+            continue
+        seen.add(key)
+        source = article["source"]["name"]
+        date = datetime.fromisoformat(article["publishedAt"]).astimezone(CHINA)
+        details = description if len(description) <= 120 else description[:120].rstrip() + "…"
+        lines.append(
+            f"- **{markdown(title)}** · {markdown(source)} · {date:%m-%d}\n\n"
+            f"  {markdown(details)}\n\n"
+            f"  {link('查看原文', article['url'])}"
+        )
+        if len(lines) >= config["limit"]:
+            break
+    return lines
+
+
 def news(config, now):
+    api_key = os.environ.get("GNEWS_API_KEY", "").strip()
+    if not api_key:
+        return ["尚未配置新闻摘要来源。以下为备用标题：", *news_headlines(config, now)]
+    try:
+        lines = news_with_details(config, now, api_key)
+        if lines:
+            return lines
+        reason = "近 48 小时暂无带摘要的报道。"
+    except Exception as error:
+        print(f"{config['name']}摘要获取失败（{type(error).__name__}）", file=sys.stderr)
+        reason = "新闻摘要暂不可用。"
+    return [reason, *news_headlines(config, now)]
+
+
+def news_headlines(config, now):
     params = urlencode({
         "q": config["query"] + " when:2d",
         "hl": "zh-CN", "gl": "CN", "ceid": "CN:zh-Hans",
