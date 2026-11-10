@@ -1,17 +1,39 @@
-{
-  "weather": {"name": "成都", "latitude": 30.5728, "longitude": 104.0668},
-  "news": [
-    {"name": "AI 信息流", "query": "人工智能 OR 大模型 OR AI芯片", "limit": 4},
-    {"name": "国际形势", "query": "外交 OR 地缘政治 OR 国际局势 OR 国际贸易", "limit": 4}
-  ],
-  "markets": [
-    {"name": "上证指数", "symbol": "000001.SS"},
-    {"name": "恒生指数", "symbol": "^HSI"},
-    {"name": "标普 500", "symbol": "^GSPC"},
-    {"name": "纳斯达克综合指数", "symbol": "^IXIC"}
-  ],
-  "podcasts": [
-    {"name": "硅谷101", "url": "https://feeds.fireside.fm/sv101/rss", "reason": "适合想跟进科技产业、投资与创新的人。"},
-    {"name": "101 Weekly", "url": "https://feeds.fireside.fm/101weekly/rss", "reason": "适合想用一集梳理商业热点的人。"}
-  ]
-}
+name: 微信每日简报
+
+on:
+  schedule:
+    - cron: '8 0 * * *'
+  workflow_dispatch:
+    inputs:
+      send:
+        description: 推送到微信（取消勾选则只预览）
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wechat-daily-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: 生成并按需推送
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          GNEWS_API_KEY: ${{ secrets.GNEWS_API_KEY }}
+          SEND_TO_WECHAT: ${{ github.event_name == 'schedule' || inputs.send }}
+        run: |
+          if [ "$SEND_TO_WECHAT" = 'true' ]; then
+            python brief.py --send
+          else
+            python brief.py
+          fi
